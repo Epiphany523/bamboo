@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package taskservice;
+
+option go_package = "bamboo/cmd/asynctaskmanager/proto;taskservice";
+
+import "google/protobuf/timestamp.proto";
+
+// TaskService 任务管理服务
+service TaskService {
+  // CreateTask 创建任务
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+  
+  // GetTask 查询任务
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  
+  // CancelTask 取消任务
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+  
+  // GetTaskLogs 获取任务日志
+  rpc GetTaskLogs(GetTaskLogsRequest) returns (GetTaskLogsResponse);
+  
+  // ListTasks 列出任务
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+}
+
+// CreateTaskRequest 创建任务请求
+message CreateTaskRequest {
+  string task_type = 1;
+  int32 priority = 2; // 0=Normal, 1=High
+  map<string, string> payload = 3;
+}
+
+// CreateTaskResponse 创建任务响应
+message CreateTaskResponse {
+  Task task = 1;
+}
+
+// GetTaskRequest 查询任务请求
+message GetTaskRequest {
+  string task_id = 1;
+}
+
+// GetTaskResponse 查询任务响应
+message GetTaskResponse {
+  Task task = 1;
+}
+
+// CancelTaskRequest 取消任务请求
+message CancelTaskRequest {
+  string task_id = 1;
+}
+
+// CancelTaskResponse 取消任务响应
+message CancelTaskResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// GetTaskLogsRequest 获取任务日志请求
+message GetTaskLogsRequest {
+  string task_id = 1;
+}
+
+// GetTaskLogsResponse 获取任务日志响应
+message GetTaskLogsResponse {
+  repeated TaskLog logs = 1;
+}
+
+// ListTasksRequest 列出任务请求
+message ListTasksRequest {
+  string status = 1; // 可选：按状态过滤
+  int32 priority = 2; // 可选：按优先级过滤，-1表示不过滤
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// ListTasksResponse 列出任务响应
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  int32 total = 2;
+}
+
+// Task 任务信息
+message Task {
+  string task_id = 1;
+  string task_type = 2;
+  string status = 3;
+  int32 priority = 4;
+  map<string, string> payload = 5;
+  map<string, string> result = 6;
+  string worker_id = 7;
+  int32 retry_count = 8;
+  int32 max_retry = 9;
+  string error_message = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp started_at = 12;
+  google.protobuf.Timestamp completed_at = 13;
+}
+
+// TaskLog 任务日志
+message TaskLog {
+  string log_id = 1;
+  string task_id = 2;
+  string log_type = 3;
+  string from_status = 4;
+  string to_status = 5;
+  string message = 6;
+  string worker_id = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
