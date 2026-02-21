@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -117,6 +118,7 @@ type Server struct {
 	taskService      *application.TaskService
 	redisClient      *redis.Client
 	mysqlClient      *mysql.Client
+	wg               sync.WaitGroup
 }
 
 // NewServer 创建服务器
@@ -137,10 +139,10 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	taskRepo := mysql.NewTaskRepository(mysqlClient)
 	taskLogRepo := mysql.NewTaskLogRepository(mysqlClient)
 	taskConfigRepo := mysql.NewTaskConfigRepository(mysqlClient)
-	workerRepo := mysql.NewWorkerRepository(mysqlClient)
+	//workerRepo := mysql.NewWorkerRepository(mysqlClient)
 
 	// 使用redis存放worker
-	// workerRepo = redis.NewWorkerRepository(redisClient)
+	workerRepo := redis.NewWorkerRepository(redisClient)
 
 	// 创建队列管理器
 	queueManager := redis.NewQueueManager(redisClient)
@@ -232,22 +234,28 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 func (s *Server) Start(ctx context.Context) error {
 	log.Printf("[%s] Starting server...", s.config.ServerID)
 
+	s.wg.Add(1)
 	// 启动 Worker 服务
 	go func() {
+		defer s.wg.Done()
 		if err := s.workerService.Start(ctx); err != nil {
 			log.Printf("[%s] Worker service stopped: %v", s.config.ServerID, err)
 		}
 	}()
 
+	s.wg.Add(1)
 	// 启动 Scheduler 服务
 	go func() {
+		defer s.wg.Done()
 		if err := s.schedulerService.Start(ctx); err != nil {
 			log.Printf("[%s] Scheduler service stopped: %v", s.config.ServerID, err)
 		}
 	}()
 
+	s.wg.Add(1)
 	// 启动 gRPC 服务器
 	go func() {
+		defer s.wg.Done()
 		if err := s.grpcServer.Start(); err != nil {
 			log.Printf("[%s] gRPC server stopped: %v", s.config.ServerID, err)
 		}
@@ -261,6 +269,8 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Stop() error {
 	log.Printf("[%s] Stopping server...", s.config.ServerID)
 	s.grpcServer.Stop()
+	s.wg.Wait()
+	s.workerService.Stop()
 	s.redisClient.Close()
 	s.mysqlClient.Close()
 	return nil

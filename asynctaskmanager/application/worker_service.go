@@ -217,3 +217,7 @@ func (s *WorkerService) processTask(ctx context.Context) error {
 
 	return nil
 }
+
+func (s *WorkerService) Stop() error {
+	return s.workerRepo.Remove(context.Background(), s.worker.WorkerID)
+}
