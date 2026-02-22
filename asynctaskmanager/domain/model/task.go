@@ -85,6 +85,14 @@ func (t *Task) MarkAsProcessing(workerID string) {
 	t.StartedAt = &now
 }
 
+// MarkAsPending 标记任务为待处理
+func (t *Task) MarkAsPending() {
+	t.Status = StatusPending
+	t.WorkerID = ""
+	t.StartedAt = nil
+	t.CompletedAt = nil
+}
+
 // MarkAsSuccess 标记任务为成功
 func (t *Task) MarkAsSuccess(result map[string]interface{}) {
 	t.Status = StatusSuccess

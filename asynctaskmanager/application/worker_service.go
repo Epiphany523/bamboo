@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"bamboo/asynctaskmanager/domain/model"
@@ -21,6 +22,8 @@ type WorkerService struct {
 	queueManager      *redis.QueueManager
 	executorRegistry  service.ExecutorRegistry
 	heartbeatInterval time.Duration
+	runningTasks      map[string]context.CancelFunc // 正在执行的任务及其取消函数
+	taskMutex         sync.RWMutex                  // 保护 runningTasks 的并发访问
 }
 
 // NewWorkerService 创建 Worker 服务
@@ -41,6 +44,7 @@ func NewWorkerService(
 		queueManager:      queueManager,
 		executorRegistry:  executorRegistry,
 		heartbeatInterval: heartbeatInterval,
+		runningTasks:      make(map[string]context.CancelFunc),
 	}
 }
 
@@ -58,6 +62,9 @@ func (s *WorkerService) Start(ctx context.Context) error {
 
 	// 启动心跳
 	go s.heartbeatLoop(ctx)
+
+	// 启动取消监听
+	go s.cancelListener(ctx)
 
 	// 启动任务处理循环
 	return s.taskLoop(ctx)
@@ -85,7 +92,8 @@ func (s *WorkerService) heartbeatLoop(ctx context.Context) {
 
 // taskLoop 任务处理循环
 func (s *WorkerService) taskLoop(ctx context.Context) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	//ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -144,9 +152,21 @@ func (s *WorkerService) processTask(ctx context.Context) error {
 		return fmt.Errorf("executor not found: %s", task.TaskType)
 	}
 
-	// 设置超时
+	// 设置超时和取消上下文
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(task.Timeout)*time.Second)
 	defer cancel()
+
+	// 注册正在执行的任务，以便支持取消
+	s.taskMutex.Lock()
+	s.runningTasks[taskID] = cancel
+	s.taskMutex.Unlock()
+
+	// 执行完成后清理
+	defer func() {
+		s.taskMutex.Lock()
+		delete(s.runningTasks, taskID)
+		s.taskMutex.Unlock()
+	}()
 
 	// 执行任务
 	result, err := executor.Execute(execCtx, task)
@@ -157,6 +177,25 @@ func (s *WorkerService) processTask(ctx context.Context) error {
 			// 超时
 			task.MarkAsTimeout()
 			log.Printf("task %s timeout", taskID)
+		} else if execCtx.Err() == context.Canceled {
+			// 被取消
+			task.MarkAsCancelled()
+			log.Printf("task %s cancelled during execution", taskID)
+
+			// 记录取消日志
+			logEntry := model.NewStateChangeLog(
+				taskID,
+				model.StatusProcessing,
+				model.StatusCancelled,
+				s.worker.WorkerID,
+				"Task cancelled during execution",
+			)
+			_ = s.taskLogRepo.Create(ctx, logEntry)
+
+			// 更新负载并返回
+			s.worker.CompleteTask()
+			_ = s.workerRepo.UpdateLoad(ctx, s.worker.WorkerID, s.worker.CurrentLoad)
+			return nil
 		} else {
 			// 失败
 			task.MarkAsFailed(err.Error())
@@ -218,6 +257,40 @@ func (s *WorkerService) processTask(ctx context.Context) error {
 	return nil
 }
 
-func (s *WorkerService) Stop() error {
-	return s.workerRepo.Remove(context.Background(), s.worker.WorkerID)
+// cancelListener 监听任务取消通知
+func (s *WorkerService) cancelListener(ctx context.Context) {
+	// 订阅取消通知频道
+	pubsub := s.queueManager.SubscribeCancelChannel(ctx, s.worker.WorkerID)
+	defer pubsub.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			// 接收取消通知消息
+			msg, err := pubsub.ReceiveMessage(ctx)
+			if err != nil {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
+			taskID := msg.Payload
+			if taskID != "" {
+				s.cancelRunningTask(taskID)
+			}
+		}
+	}
+}
+
+// cancelRunningTask 取消正在执行的任务
+func (s *WorkerService) cancelRunningTask(taskID string) {
+	s.taskMutex.RLock()
+	cancelFunc, exists := s.runningTasks[taskID]
+	s.taskMutex.RUnlock()
+
+	if exists {
+		log.Printf("cancelling running task %s on worker %s", taskID, s.worker.WorkerID)
+		cancelFunc()
+	}
 }

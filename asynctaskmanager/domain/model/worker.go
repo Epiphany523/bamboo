@@ -29,7 +29,7 @@ type Worker struct {
 
 // IsHealthy 判断 Worker 是否健康
 func (w *Worker) IsHealthy(timeout time.Duration) bool {
-	return time.Since(w.LastHeartbeat) <= timeout
+	return time.Since(w.LastHeartbeat) <= timeout || w.Status == WorkerOffline
 }
 
 // CanAcceptTask 判断是否可以接受新任务

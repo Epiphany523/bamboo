@@ -4,6 +4,8 @@ import (
 	"bamboo/asynctaskmanager/domain/model"
 	"context"
 	"fmt"
+
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -80,4 +82,22 @@ func (qm *QueueManager) CheckCancelMark(ctx context.Context, taskID string) (boo
 func (qm *QueueManager) RemoveCancelMark(ctx context.Context, taskID string) error {
 	key := fmt.Sprintf("task:cancel:%s", taskID)
 	return qm.client.Del(ctx, key)
+}
+
+// PublishCancelNotification 发布取消通知给指定 Worker
+func (qm *QueueManager) PublishCancelNotification(ctx context.Context, workerID, taskID string) error {
+	channel := fmt.Sprintf("cancel:%s", workerID)
+	return qm.client.Publish(ctx, channel, taskID)
+}
+
+// SubscribeCancelChannel 订阅取消通知频道
+func (qm *QueueManager) SubscribeCancelChannel(ctx context.Context, workerID string) *redis.PubSub {
+	channel := fmt.Sprintf("cancel:%s", workerID)
+	return qm.client.Subscribe(ctx, channel)
+}
+
+// GetWorkerQueueLength 获取 Worker 队列长度
+func (qm *QueueManager) GetWorkerQueueLength(ctx context.Context, workerID string) (int64, error) {
+	key := fmt.Sprintf("worker:%s:queue", workerID)
+	return qm.client.LLen(ctx, key)
 }

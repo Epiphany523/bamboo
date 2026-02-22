@@ -77,10 +77,12 @@ func (s *SchedulerService) runAsLeader(ctx context.Context) error {
 	scanTicker := time.NewTicker(s.scanInterval)
 	renewTicker := time.NewTicker(3 * time.Second)
 	timeoutTicker := time.NewTicker(30 * time.Second)
+	recoveryTicker := time.NewTicker(60 * time.Second) // 故障恢复检查
 
 	defer scanTicker.Stop()
 	defer renewTicker.Stop()
 	defer timeoutTicker.Stop()
+	defer recoveryTicker.Stop()
 
 	for {
 		select {
@@ -105,6 +107,12 @@ func (s *SchedulerService) runAsLeader(ctx context.Context) error {
 			// 检查超时任务
 			if err := s.checkTimeoutTasks(ctx); err != nil {
 				log.Printf("check timeout tasks failed: %v", err)
+			}
+
+		case <-recoveryTicker.C:
+			// 故障恢复：检查失效的 Worker 并恢复其任务
+			if err := s.recoverFailedWorkerTasks(ctx); err != nil {
+				log.Printf("recover failed worker tasks failed: %v", err)
 			}
 		}
 	}
@@ -162,7 +170,7 @@ func (s *SchedulerService) scanAndSchedule(ctx context.Context) error {
 		_ = s.queueManager.PushTask(ctx, taskID, task.Priority)
 		return err
 	}
-
+	log.Printf("select worker %s for task %s  healthyWorkers %v, ", worker.ID, taskID, healthyWorkers)
 	// 更新任务状态
 	task.MarkAsProcessing(worker.WorkerID)
 	if err := s.taskRepo.Update(ctx, task); err != nil {
@@ -245,6 +253,88 @@ func (s *SchedulerService) checkTimeoutTasks(ctx context.Context) error {
 			)
 			_ = s.taskLogRepo.Create(ctx, logEntry)
 		}
+	}
+
+	return nil
+}
+
+// recoverFailedWorkerTasks 恢复失效 Worker 的任务
+func (s *SchedulerService) recoverFailedWorkerTasks(ctx context.Context) error {
+	// 获取所有 Worker
+	workers, err := s.workerRepo.FindAll(ctx)
+	if err != nil {
+		return fmt.Errorf("find all workers failed: %w", err)
+	}
+
+	for _, worker := range workers {
+		// 检查 Worker 是否失效（心跳超时）
+		if !worker.IsHealthy(s.heartbeatTimeout) {
+			log.Printf("detected failed worker: %s, recovering tasks", worker.WorkerID)
+
+			// 恢复该 Worker 队列中的任务
+			if err := s.recoverWorkerTasks(ctx, worker.WorkerID); err != nil {
+				log.Printf("recover tasks for worker %s failed: %v", worker.WorkerID, err)
+				continue
+			}
+			if err := s.workerRepo.Remove(ctx, worker.WorkerID); err != nil {
+				log.Printf("mark worker %s offline failed: %v", worker.WorkerID, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// recoverWorkerTasks 恢复指定 Worker 的任务
+func (s *SchedulerService) recoverWorkerTasks(ctx context.Context, workerID string) error {
+	recoveredCount := 0
+
+	for {
+		// 从失效 Worker 的队列中取出任务
+		taskID, err := s.queueManager.PopFromWorkerQueue(ctx, workerID)
+		if err != nil {
+			break // 队列为空
+		}
+
+		// 获取任务详情
+		task, err := s.taskRepo.GetByID(ctx, taskID)
+		if err != nil {
+			log.Printf("get task %s failed during recovery: %v", taskID, err)
+			continue
+		}
+
+		// 检查任务状态，只恢复处理中的任务
+		if task.Status == model.StatusProcessing && task.WorkerID == workerID {
+			// 重置任务状态为待处理
+			task.MarkAsPending()
+			if err := s.taskRepo.Update(ctx, task); err != nil {
+				log.Printf("reset task %s status failed: %v", taskID, err)
+				continue
+			}
+
+			// 重新推送到调度队列
+			if err := s.queueManager.PushTask(ctx, taskID, task.Priority); err != nil {
+				log.Printf("push recovered task %s to queue failed: %v", taskID, err)
+				continue
+			}
+
+			// 记录恢复日志
+			logEntry := model.NewStateChangeLog(
+				taskID,
+				model.StatusProcessing,
+				model.StatusPending,
+				"",
+				fmt.Sprintf("Task recovered from failed worker %s", workerID),
+			)
+			_ = s.taskLogRepo.Create(ctx, logEntry)
+
+			recoveredCount++
+			log.Printf("recovered task %s from failed worker %s", taskID, workerID)
+		}
+	}
+
+	if recoveredCount > 0 {
+		log.Printf("recovered %d tasks from failed worker %s", recoveredCount, workerID)
 	}
 
 	return nil

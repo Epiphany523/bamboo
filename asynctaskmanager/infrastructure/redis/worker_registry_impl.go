@@ -12,7 +12,7 @@ import (
 
 const (
 	workerKeyPrefix = "worker:"
-	workerTTL       = 30 * time.Second
+	workerTTL       = 120 * time.Second
 )
 
 type workerRepositoryImpl struct {
@@ -24,6 +24,7 @@ func NewWorkerRepository(client *Client) repository.WorkerRepository {
 	return &workerRepositoryImpl{client: client}
 }
 
+// Register todo 需要schedule来维护worker:type的ttl
 func (r *workerRepositoryImpl) Register(ctx context.Context, worker *model.Worker) error {
 	key := workerKeyPrefix + worker.WorkerID
 
@@ -42,11 +43,6 @@ func (r *workerRepositoryImpl) Register(ctx context.Context, worker *model.Worke
 	// 存储到 Redis Hash
 	if err := r.client.HSet(ctx, key, flattenMap(data)...); err != nil {
 		return fmt.Errorf("register worker failed: %w", err)
-	}
-
-	// 设置过期时间
-	if err := r.client.Expire(ctx, key, workerTTL); err != nil {
-		return fmt.Errorf("set worker ttl failed: %w", err)
 	}
 
 	// 添加到任务类型索引

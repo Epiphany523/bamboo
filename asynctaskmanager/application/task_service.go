@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"bamboo/asynctaskmanager/domain/model"
 	"bamboo/asynctaskmanager/domain/repository"
@@ -93,14 +94,24 @@ func (s *TaskService) CancelTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("task cannot be cancelled, current status: %s", task.Status)
 	}
 
+	// 待scheduler分配状态
 	if task.Status == model.StatusPending {
 		// 直接标记为已取消
 		task.MarkAsCancelled()
 		if err := s.taskRepo.Update(ctx, task); err != nil {
 			return fmt.Errorf("update task failed: %w", err)
 		}
-	} else {
-		// 设置取消标记，Worker 会检测到
+	} else if task.Status == model.StatusProcessing { // 已经分配给对应的worker，但是可能还没有执行
+		// 任务正在执行中，需要通知 Worker 取消
+		if task.WorkerID != "" {
+			// 发送取消通知给 Worker
+			if err := s.queueManager.PublishCancelNotification(ctx, task.WorkerID, taskID); err != nil {
+				return fmt.Errorf("publish cancel notification failed: %w", err)
+			}
+			log.Printf("sent cancel notification for task %s to worker %s", taskID, task.WorkerID)
+		}
+
+		// 设置取消标记，作为备用机制
 		if err := s.queueManager.SetCancelMark(ctx, taskID); err != nil {
 			return fmt.Errorf("set cancel mark failed: %w", err)
 		}

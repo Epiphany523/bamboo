@@ -143,3 +143,7 @@ func (c *Client) Publish(ctx context.Context, channel string, message interface{
 func (c *Client) Subscribe(ctx context.Context, channels ...string) *redis.PubSub {
 	return c.client.Subscribe(ctx, channels...)
 }
+// BRPop 阻塞式右侧弹出列表
+func (c *Client) BRPop(ctx context.Context, timeout time.Duration, keys ...string) ([]string, error) {
+	return c.client.BRPop(ctx, timeout, keys...).Result()
+}

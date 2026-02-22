@@ -270,7 +270,6 @@ func (s *Server) Stop() error {
 	log.Printf("[%s] Stopping server...", s.config.ServerID)
 	s.grpcServer.Stop()
 	s.wg.Wait()
-	s.workerService.Stop()
 	s.redisClient.Close()
 	s.mysqlClient.Close()
 	return nil
